@@ -48,17 +48,38 @@ Un lote de 6 mensajes más alertas ronda 40-60k tokens, muy por debajo del tope 
 
 ## 5. Estrategia de extracción
 
-- **Determinista (P0)**: regex y heurísticas sobre `contrato.txt` (`src/lib/parsers.ts`):
-  - Partes: etiquetas de contratante/contratista y razón social; NIT sin puntos ni dígito de verificación; país inferido del identificador y del texto.
-  - Valor y moneda: cifras con separadores locales normalizadas a número; "por demanda" produce valor 0 con `valor_indeterminado`.
-  - Plazo: fechas explícitas o plazo en meses, del que se deriva `fecha_fin`.
-  - Póliza: se buscan cláusulas de garantía/póliza y sus tipos.
-- **Confianza por campo** en [0, 1]: alta cuando el patrón es explícito y único; media cuando hay ambigüedad o valor derivado (fecha_fin desde meses, valor por demanda); 0 y `null` cuando el campo no está. Los campos con confianza menor a 0.8 pasan a `requiere_revision`.
-- **Dónde entra el modelo**: orquesta el flujo, explica los campos dudosos, formula la pregunta de confirmación y recibe del usuario los valores corregidos. **Dónde no**: no extrae ni decide clasificaciones; el valor registrado siempre sale de `contratos_validar`/`contratos_registrar`.
+La extracción es 100 % determinista: ninguna llamada al modelo. Vive en `extraerContrato` (`src/lib/contratos-core.ts`) y usa utilidades puras de `src/lib/parsers.ts`. El texto se divide en párrafos (separados por línea en blanco) y las cláusulas se ubican por su encabezado (`PRIMERA. OBJETO.`, `VALOR`, `PLAZO`, `GARANTÍAS`) o, en un otrosí, por el nombre entre paréntesis.
+
+**Campos y reglas**
+
+| Campo | Cómo se extrae | Confianza |
+|---|---|---|
+| `id_contrato` | Regex `No. <código con guiones>` en la primera línea (o en el texto). Si no hay, se genera `AUTO-<año>-NNN` | 0.95 / 0.6 si es AUTO |
+| `nit_cliente` | Regex `NIT\|RUC\|RTN\|RUT` + número; se descarta el de Periferia (900123456). Se elige el que va seguido de "CONTRATANTE" antes de "CONTRATISTA". Se normaliza sin puntos ni dígito de verificación (`890.900.111-4` → `890900111`) | 0.95 si se ubica como contratante; 0.6 si se toma el primero |
+| `cliente` | Texto entre "Entre … " y el identificador; se pasa a razón social con mayúsculas normalizadas | 0.95 |
+| `pais` | Palabras clave del texto que sigue al identificador (Colombia, Quito, Lima, Panamá, Honduras…); si no, por forma del número (13 dígitos terminados en 001 → EC, 11 → PE, 14 → HN, 9–10 → CO) | 0.95 / 0.6 / 0 |
+| `objeto` | Párrafo `OBJETO.` truncado a 200 caracteres | 0.95 |
+| `valor`, `moneda` | En el párrafo VALOR, regex `<código ISO de 3 letras> $? <número>`. Monedas válidas: COP, USD, PEN, PAB, HNL; otra lanza error claro | 0.95 |
+
+**Parser de números por moneda** (`parseNumero`): COP usa punto como miles y coma como decimal (`COP $265.000.000` → 265000000); el resto usa coma como miles y punto como decimal (`USD 120,000.00` → 120000). Si el formato es ambiguo (varias comas en COP, varios puntos en las demás) o ilegible, lanza un error de negocio.
+
+**Valor indeterminado**: si el párrafo VALOR no trae cifra pero dice "no tiene un valor determinado", "por demanda", "cuantía indeterminada", etc., queda `valor 0`, `valor_indeterminado: true` y confianza 0.6. Si el valor existe y la moneda no, la moneda se toma de otra cifra del texto o del país (COP/USD/PEN/PAB/HNL), con confianza 0.6.
+
+**Fechas en texto** (`fechaDesdeTexto`): en el párrafo PLAZO se buscan primero fechas con el día entre paréntesis (`primero (1) de agosto de 2026`, `treinta y uno (31) de julio de 2027`) y, si no hay, `1 de agosto de 2026`. Se usa el número, nunca la palabra, y el mes en español sin tildes. Las fechas inválidas lanzan error.
+- Dos fechas en el plazo → `fecha_inicio` y `fecha_fin`, confianza 0.95.
+- Una sola fecha: si va precedida de "hasta" es `fecha_fin`; si no, `fecha_inicio` (0.95).
+- Plazo en meses o años (`doce (12) meses`) sin fecha de inicio: `fecha_inicio` sale de la firma con día ("a los … (31) días del mes de …"), confianza 0.6; si la firma dice solo "en el mes de agosto de 2026", se usa la fecha del correo con confianza 0.5. `fecha_fin` = inicio + meses (`sumarMeses`, recortando al último día del mes), confianza 0.6.
+- Otrosí: la última fecha del plazo es la nueva `fecha_fin` (0.95); el resto de campos se conserva de la fila existente.
+
+**Póliza**: se busca la cláusula de garantías o una frase "constituirá … póliza". Si existe, `requiere_poliza = true` y los tipos salen de palabras clave (cumplimiento, calidad, responsabilidad civil, salarios, anticipo, seriedad). Si la cláusula es condicional ("cuyo valor", "superen", "en caso de", "siempre que", "órdenes de servicio"), la confianza baja a 0.6; si no, 0.95. Sin cláusula, `requiere_poliza = false` con 0.9. En un otrosí, "deberán ampliarse" o "ampliación de garantías" marca `amplia_garantias`, que lleva `estado_poliza` a `pendiente`.
+
+**Confianza y revisión**: cada campo guarda su confianza (explícito 0.95; derivado o inferido 0.5–0.6; ausente `null` con 0). `camposEnRevision` pasa a `requiere_revision` todo campo de `id_contrato, cliente, nit_cliente, pais, objeto, valor, moneda, fecha_inicio, fecha_fin, requiere_poliza, tipo_poliza` con confianza menor a `UMBRAL_CONFIANZA` (0.8); `tipo_poliza` solo se evalúa si requiere póliza, y en un otrosí no se revisan los campos que el documento no trae.
+
+**Dónde entra el modelo**: orquesta el flujo, explica los campos dudosos, formula la pregunta de confirmación y recibe del usuario los valores corregidos. **Dónde no**: no extrae ni clasifica; el valor registrado siempre sale de `contratos_validar` y `contratos_registrar`.
 
 ## 6. Regla de gobierno (propuesta de una página)
 
-1. **Canal único**: buzón `contratos@periferia.example` (dirección ilustrativa), administrado por la analista administrativa, con un suplente nombrado para que el proceso sobreviva a la rotación. El agente es el único lector automático.
+1. **Canal único**: buzón de recepción simulado (`fixtures/reto-02/buzon/`), administrado por la analista administrativa, con un suplente nombrado para que el proceso sobreviva a la rotación. El agente es el único lector automático.
 2. **Obligación del comercial**: enviar al buzón todo contrato firmado (con o sin póliza), cada otrosí y cada acta de terminación, en PDF firmado, dentro de los 3 días hábiles siguientes a la firma. Asunto: `[CONTRATO|OTROSI|TERMINACION] <NIT cliente> - <número de contrato>`.
 3. **Acuse automático**: el agente responde al comercial en menos de 1 hora hábil con el estado (registrado, en revisión, duplicado o rechazado) y el motivo.
 4. **Excepciones y escalamiento**: contrato sin firmar, sin valor o con campos dudosos queda en revisión; la analista consulta al comercial y, si no hay respuesta en 3 días hábiles, escala a la gerencia comercial. Nada con baja confianza entra al maestro sin confirmación humana.
