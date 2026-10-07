@@ -2,7 +2,7 @@
 
 Agente conversacional que actúa como punto único de recepción de contratos: lee el buzón, extrae datos con confianza, valida (nuevo / actualización / duplicado / rechazado), registra en el maestro y genera alertas.
 
-Link de prueba: PENDIENTE_URL
+Link de prueba: https://reto-02-granados.onrender.com/
 
 ## Levantar en local
 
