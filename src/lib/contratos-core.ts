@@ -207,6 +207,16 @@ const FECHA_PAREN = new RegExp(`\\((\\d{1,2})\\)\\s+de\\s+(${MES_RE})\\s+de\\s+(
 const FECHA_PLANA = new RegExp(`\\b(\\d{1,2})\\s+de\\s+(${MES_RE})\\s+de\\s+(\\d{4})`, "gi")
 const MONEDA_RE = /\b([A-Z]{3})\s*\$?\s*(\d[\d.,]*)/g
 
+/** Deja solo el objeto: quita el preámbulo "EL CONTRATISTA se obliga a / prestará" y la frase marco previa. */
+export function limpiarObjeto(raw: string): string {
+  const t = raw
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^Establecer las condiciones generales bajo las cuales\s+/i, "")
+    .replace(/^EL CONTRATISTA\s+(?:se obliga a|prestar[áa])\s+/i, "")
+  return (t.charAt(0).toUpperCase() + t.slice(1)).slice(0, 200)
+}
+
 function parrafos(texto: string): string[] {
   return texto.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p !== "")
 }
@@ -320,7 +330,7 @@ export function extraerContrato(dir: string, correo: Correo, adjunto: AdjuntoCon
   if (!esOtrosi) {
     const o = ps.map((p) => /^[A-ZÁÉÍÓÚ]+\.\s*OBJETO\.\s*([\s\S]+)$/i.exec(p)).find((m) => m !== null)
     if (o?.[1]) {
-      c.objeto = o[1].replace(/\s+/g, " ").trim().slice(0, 200)
+      c.objeto = limpiarObjeto(o[1])
       conf["objeto"] = 0.95
     }
   }
@@ -452,7 +462,7 @@ function validarFormatoFechas(c: Contrato) {
 
 const CAMPOS_COMPARABLES = ["valor", "moneda", "fecha_inicio", "fecha_fin"] as const
 
-function camposEnRevision(c: Contrato): string[] {
+export function camposEnRevision(c: Contrato): string[] {
   const r: string[] = []
   for (const k of CAMPOS_REVISION) {
     if (k === "tipo_poliza" && c.requiere_poliza !== true) continue

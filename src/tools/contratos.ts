@@ -2,7 +2,7 @@
 // La lógica vive en src/lib/contratos-core.ts; aquí solo el contrato (description, args, execute).
 import { z } from "zod"
 import {
-  ContratoSchema, buscarAdjuntoContrato, ejecutar, extraerContrato, generarAlertas, leerCorreo, leerProcesados,
+  ContratoSchema, buscarAdjuntoContrato, camposEnRevision, ejecutar, extraerContrato, generarAlertas, leerCorreo, leerProcesados,
   listarIdsBuzon, registrarMensaje, validarMensaje, type Ctx,
 } from "../lib/contratos-core"
 import { ErrorNegocio } from "../lib/parsers"
@@ -50,7 +50,7 @@ export const extraer = {
       const { adjunto, motivo } = buscarAdjuntoContrato(ctx.directory, correo)
       if (!adjunto) throw new ErrorNegocio(`El mensaje ${args.mensaje_id} no contiene un contrato adjunto. ${motivo ?? ""}`.trim())
       const c = extraerContrato(ctx.directory, correo, adjunto)
-      return { data: c, resumen: `${c.id_contrato ?? "sin id"} ${c.cliente ?? "sin cliente"}${c.es_otrosi ? " (otrosí)" : ""}` }
+      return { data: { ...c, requiere_revision: camposEnRevision(c) }, resumen: `${c.id_contrato ?? "sin id"} ${c.cliente ?? "sin cliente"}${c.es_otrosi ? " (otrosí)" : ""}` }
     })
   },
 }
