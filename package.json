@@ -13,5 +13,12 @@
     "hono": "^4.13.13",
     "openai": "^7.30.0",
     "zod": "^4.6.5"
+  },
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "demo": "bun run demo.ts",
+    "test": "bun test",
+    "modulo": "bun scripts/build-modulo.ts"
   }
 }
